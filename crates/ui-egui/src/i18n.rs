@@ -52,12 +52,15 @@ macro_rules! language_table {
                 static EMPTY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
                 // A malformed catalog logs and comes back empty: a broken translation degrades to
                 // English text, it never takes the app down.
-                let parse = |catalog: Option<&'static str>| match catalog {
+                let parse = |language: Locale, catalog: Option<&'static str>| match catalog {
                     Some(json) => match serde_json::from_str::<BTreeMap<String, String>>(json) {
                         Ok(mut messages) => {
                             // A right-to-left catalog stores logical order; egui needs display
-                            // order, applied once at load (bidi::display_rtl).
-                            if self.rtl() {
+                            // order, applied once at load (bidi::display_rtl). The key is the
+                            // catalog's own language: whichever caller fills `CATALOGS` first
+                            // parses every language, so `self` may be English while Arabic is
+                            // being parsed.
+                            if language.rtl() {
                                 for value in messages.values_mut() {
                                     *value = crate::bidi::display_rtl(value);
                                 }
@@ -65,7 +68,7 @@ macro_rules! language_table {
                             messages
                         }
                         Err(error) => {
-                            log::error!("Invalid message catalog for {}: {error}", self.code());
+                            log::error!("Invalid message catalog for {}: {error}", language.code());
                             BTreeMap::new()
                         }
                     },
@@ -77,7 +80,7 @@ macro_rules! language_table {
                             .iter()
                             .map(|language| {
                                 let catalog = match *language { $(Self::$variant => Some($catalog),)* _ => None };
-                                (*language, parse(catalog))
+                                (*language, parse(*language, catalog))
                             })
                             .collect()
                     })
@@ -473,6 +476,17 @@ mod tests {
                 assert!(!value.is_empty(), "{language:?}: empty translation for {key:?}");
             }
         }
+    }
+
+    /// A right-to-left catalog is reordered for display at load whatever language asked for a
+    /// catalog first: `CATALOGS` parses every language on the first call, and the app reaches it
+    /// through English (the default) before the settings' language is applied.
+    #[test]
+    fn arabic_is_display_ordered_whoever_parses_catalogs_first() {
+        Locale::En.catalog();
+        let translation = Locale::Ar.tr("Photo Merge");
+        assert_eq!(translation, "الصور دمج", "a two-word label reads right to left");
+        assert_ne!(Locale::De.tr("File"), "File", "a left-to-right catalog is untouched");
     }
 
     /// Where two catalogs translate the same text they agree on its placeholders. Catalogs may cover
