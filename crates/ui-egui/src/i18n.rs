@@ -53,8 +53,17 @@ macro_rules! language_table {
                 // A malformed catalog logs and comes back empty: a broken translation degrades to
                 // English text, it never takes the app down.
                 let parse = |catalog: Option<&'static str>| match catalog {
-                    Some(json) => match serde_json::from_str(json) {
-                        Ok(messages) => messages,
+                    Some(json) => match serde_json::from_str::<BTreeMap<String, String>>(json) {
+                        Ok(mut messages) => {
+                            // A right-to-left catalog stores logical order; egui needs display
+                            // order, applied once at load (bidi::display_rtl).
+                            if self.rtl() {
+                                for value in messages.values_mut() {
+                                    *value = crate::bidi::display_rtl(value);
+                                }
+                            }
+                            messages
+                        }
                         Err(error) => {
                             log::error!("Invalid message catalog for {}: {error}", self.code());
                             BTreeMap::new()
@@ -126,6 +135,22 @@ language_table! {
     Ru, "ru", "Русский", "Cyrl", include_str!("../locales/ru.json");
     Fr, "fr", "Français", "Latn", include_str!("../locales/fr.json");
     Uk, "uk", "Українська", "Cyrl", include_str!("../locales/uk.json");
+    Ar, "ar", "العربية", "Arab", include_str!("../locales/ar.json");
+}
+
+impl Locale {
+    /// Whether the language's text runs right to left: its catalog is reordered for display at
+    /// load (the `parse` above), its `tr_format!` results through [`display`], and user text is
+    /// drawn through `bidi::visual` at the paint sites.
+    pub fn rtl(self) -> bool {
+        matches!(self.script(), "Arab" | "Hebr")
+    }
+}
+
+/// The order a `tr_format!` result is drawn in: the active right-to-left language's result goes
+/// through `bidi::visual`, everything else is returned unchanged.
+pub fn display(text: String) -> String {
+    if language().rtl() { crate::bidi::visual(&text).into_owned() } else { text }
 }
 
 // The settings file stores the BCP-47 code (`"zh-hans"`), never the Rust variant name, so a
@@ -522,6 +547,9 @@ mod tests {
         for tag in ["es", "es-ES", "es_MX.UTF-8", "es-419"] {
             assert_eq!(Locale::parse_tag(tag), Some(Locale::Es), "{tag}");
         }
+        for tag in ["ar", "ar-SA", "ar_EG.UTF-8", "ar-MA"] {
+            assert_eq!(Locale::parse_tag(tag), Some(Locale::Ar), "{tag}");
+        }
         assert_eq!(Locale::parse_tag("xx"), None);
     }
 
@@ -667,6 +695,7 @@ mod tests {
             ("app.language.german", Locale::De),
             ("app.language.russian", Locale::Ru),
             ("app.language.ukrainian", Locale::Uk),
+            ("app.language.arabic", Locale::Ar),
         ];
         // One command per language, and every command reachable from the menu table.
         assert_eq!(commands.len(), Locale::ALL.len());
